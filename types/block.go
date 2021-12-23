@@ -44,6 +44,7 @@ type Block struct {
 
 	Header     `json:"header"`
 	Data       `json:"data"`
+	BData      `json:"bdata"`
 	Evidence   EvidenceData `json:"evidence"`
 	LastCommit *Commit      `json:"last_commit"`
 }
@@ -80,6 +81,11 @@ func (b *Block) ValidateBasic() error {
 		return fmt.Errorf("wrong Header.DataHash. Expected %X, got %X", w, g)
 	}
 
+	//NOTE: b.Bdata.BTxs may be nil, but b.Data.Hash() still works fine.
+	if w, g := b.BData.Hash(), b.BDataHash; !bytes.Equal(w, g) {
+		return fmt.Errorf("wrong Header.BDataHash. Expected %X, got %X", w, g)
+	}
+
 	// NOTE: b.Evidence.Evidence may be nil, but we're just looping.
 	for i, ev := range b.Evidence.Evidence {
 		if err := ev.ValidateBasic(); err != nil {
@@ -101,6 +107,9 @@ func (b *Block) fillHeader() {
 	}
 	if b.DataHash == nil {
 		b.DataHash = b.Data.Hash()
+	}
+	if b.BDataHash == nil {
+		b.BDataHash = b.BData.Hash()
 	}
 	if b.EvidenceHash == nil {
 		b.EvidenceHash = b.Evidence.Hash()
@@ -177,6 +186,7 @@ func (b *Block) String() string {
 //
 // Header
 // Data
+// BData
 // Evidence
 // LastCommit
 // Hash
@@ -189,9 +199,11 @@ func (b *Block) StringIndented(indent string) string {
 %s  %v
 %s  %v
 %s  %v
+%s  %v
 %s}#%v`,
 		indent, b.Header.StringIndented(indent+"  "),
 		indent, b.Data.StringIndented(indent+"  "),
+		indent, b.BData.StringIndented(indent+"  "),
 		indent, b.Evidence.StringIndented(indent+"  "),
 		indent, b.LastCommit.StringIndented(indent+"  "),
 		indent, b.Hash())
@@ -216,6 +228,7 @@ func (b *Block) ToProto() (*tmproto.Block, error) {
 	pb.Header = *b.Header.ToProto()
 	pb.LastCommit = b.LastCommit.ToProto()
 	pb.Data = b.Data.ToProto()
+	pb.BData = b.BData.ToProto()
 
 	protoEvidence, err := b.Evidence.ToProto()
 	if err != nil {
@@ -247,7 +260,14 @@ func BlockFromProto(bp *tmproto.Block) (*Block, error) {
 	if err := b.Evidence.FromProto(&bp.Evidence); err != nil {
 		return nil, err
 	}
-
+	bdata, err := DataFromProto(&bp.BData)
+	if err != nil {
+		return nil, err
+	}
+	b.BData = bdata
+	if err := b.Evidence.FromProto(&bp.Evidence); err != nil {
+		return nil, err
+	}
 	if bp.LastCommit != nil {
 		lc, err := CommitFromProto(bp.LastCommit)
 		if err != nil {
@@ -316,6 +336,9 @@ func MakeBlock(height int64, txs []Tx, lastCommit *Commit, evidence []Evidence) 
 		Data: Data{
 			Txs: txs,
 		},
+		BData: BData{
+			BTxs: btxs,
+		},
 		Evidence:   EvidenceData{Evidence: evidence},
 		LastCommit: lastCommit,
 	}
@@ -343,7 +366,7 @@ type Header struct {
 	// hashes of block data
 	LastCommitHash tmbytes.HexBytes `json:"last_commit_hash"` // commit from validators from the last block
 	DataHash       tmbytes.HexBytes `json:"data_hash"`        // transactions
-
+	BDataHash      tmbytes.HexBytes `json:"bdata_hash"`       // batch transaction
 	// hashes from the app output from the prev block
 	ValidatorsHash     tmbytes.HexBytes `json:"validators_hash"`      // validators for the current block
 	NextValidatorsHash tmbytes.HexBytes `json:"next_validators_hash"` // validators for the next block
@@ -407,6 +430,10 @@ func (h Header) ValidateBasic() error {
 
 	if err := ValidateHash(h.DataHash); err != nil {
 		return fmt.Errorf("wrong DataHash: %v", err)
+	}
+
+	if err := ValidateHash(h.BDataHash); err != nil {
+		return fmt.Errorf("worng BDataHash: %v", err)
 	}
 
 	if err := ValidateHash(h.EvidenceHash); err != nil {
@@ -473,6 +500,7 @@ func (h *Header) Hash() tmbytes.HexBytes {
 		bzbi,
 		cdcEncode(h.LastCommitHash),
 		cdcEncode(h.DataHash),
+		cdcEncode(h.BDataHash),
 		cdcEncode(h.ValidatorsHash),
 		cdcEncode(h.NextValidatorsHash),
 		cdcEncode(h.ConsensusHash),
@@ -496,6 +524,7 @@ func (h *Header) StringIndented(indent string) string {
 %s  LastBlockID:    %v
 %s  LastCommit:     %v
 %s  Data:           %v
+%s  BData:           %v
 %s  Validators:     %v
 %s  NextValidators: %v
 %s  App:            %v
@@ -511,6 +540,7 @@ func (h *Header) StringIndented(indent string) string {
 		indent, h.LastBlockID,
 		indent, h.LastCommitHash,
 		indent, h.DataHash,
+		indent, h.BDataHash,
 		indent, h.ValidatorsHash,
 		indent, h.NextValidatorsHash,
 		indent, h.AppHash,
@@ -538,6 +568,7 @@ func (h *Header) ToProto() *tmproto.Header {
 		ConsensusHash:      h.ConsensusHash,
 		AppHash:            h.AppHash,
 		DataHash:           h.DataHash,
+		BDataHash:          h.BDataHash,
 		EvidenceHash:       h.EvidenceHash,
 		LastResultsHash:    h.LastResultsHash,
 		LastCommitHash:     h.LastCommitHash,
@@ -570,6 +601,7 @@ func HeaderFromProto(ph *tmproto.Header) (Header, error) {
 	h.ConsensusHash = ph.ConsensusHash
 	h.AppHash = ph.AppHash
 	h.DataHash = ph.DataHash
+	h.BDataHash = ph.BDataHash
 	h.EvidenceHash = ph.EvidenceHash
 	h.LastResultsHash = ph.LastResultsHash
 	h.LastCommitHash = ph.LastCommitHash
@@ -1071,6 +1103,87 @@ func DataFromProto(dp *tmproto.Data) (Data, error) {
 		data.Txs = txBzs
 	} else {
 		data.Txs = Txs{}
+	}
+
+	return *data, nil
+}
+
+//-----------------------------------------------------------------------------
+
+// Data contains the set of transactions included in the block
+type BData struct {
+
+	// Txs that will be applied by state @ block.Height+1.
+	// NOTE: not all txs here are valid.  We're just agreeing on the order first.
+	// This means that block.AppHash does not include these txs.
+	BTxs BTxs `json:"btxs"`
+
+	// Volatile
+	hash tmbytes.HexBytes
+}
+
+// Hash returns the hash of the data
+func (data *BData) Hash() tmbytes.HexBytes {
+	if data == nil {
+		return (BTxs{}).Hash()
+	}
+	if data.hash == nil {
+		data.hash = data.BTxs.Hash() // NOTE: leaves of merkle tree are TxIDs
+	}
+	return data.hash
+}
+
+// StringIndented returns an indented string representation of the transactions.
+func (data *BData) StringIndented(indent string) string {
+	if data == nil {
+		return "nil-Data"
+	}
+	txStrings := make([]string, tmmath.MinInt(len(data.BTxs), 21))
+	for i, tx := range data.BTxs {
+		if i == 20 {
+			txStrings[i] = fmt.Sprintf("... (%v total)", len(data.BTxs))
+			break
+		}
+		txStrings[i] = fmt.Sprintf("%X (%d bytes)", tx.Hash(), len(tx))
+	}
+	return fmt.Sprintf(`Data{
+%s  %v
+%s}#%v`,
+		indent, strings.Join(txStrings, "\n"+indent+"  "),
+		indent, data.hash)
+}
+
+// ToProto converts Data to protobuf
+func (data *BData) ToProto() tmproto.BData {
+	tp := new(tmproto.BData)
+
+	if len(data.BTxs) > 0 {
+		txBzs := make([][]byte, len(data.BTxs))
+		for i := range data.BTxs {
+			txBzs[i] = data.BTxs[i]
+		}
+		tp.Txs = txBzs
+	}
+
+	return *tp
+}
+
+// DataFromProto takes a protobuf representation of Data &
+// returns the native type.
+func BDataFromProto(dp *tmproto.BData) (BData, error) {
+	if dp == nil {
+		return BData{}, errors.New("nil bdata")
+	}
+	data := new(BData)
+
+	if len(dp.BTxs) > 0 {
+		txBzs := make(BTxs, len(dp.BTxs))
+		for i := range dp.BTxs {
+			txBzs[i] = Tx(dp.BTxs[i])
+		}
+		data.BTxs = txBzs
+	} else {
+		data.BTxs = BTxs{}
 	}
 
 	return *data, nil
